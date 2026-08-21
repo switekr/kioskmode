@@ -1,0 +1,18 @@
+# .NET build output
+[Bb]in/
+[Oo]bj/
+*.pdb
+
+# .NET publish output (self-contained kiosk .exe - rebuild via README instructions)
+publish/
+
+# Per-user / per-machine project files
+*.user
+.vs/
+
+# Runtime-generated local config (auto-created with defaults on first run)
+kiosk.settings.json
+
+# OS cruft
+Thumbs.db
+desktop.ini

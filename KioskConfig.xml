@@ -1,0 +1,28 @@
+<?xml version="1.0" encoding="utf-8" ?>
+<AssignedAccessConfiguration xmlns="http://schemas.microsoft.com/AssignedAccess/2017/config"
+    xmlns:v4="http://schemas.microsoft.com/AssignedAccess/2021/config">
+    <!--
+      Single-app kiosk profile: the KioskUser account launches straight into
+      Edge running in "public browsing" kiosk mode (multi-tab, InPrivate,
+      no address bar editing beyond navigation, resets itself after 5 min
+      idle). Ctrl+Alt+Del is left as the default breakout sequence - it
+      exits the kiosk app and returns to the secure Windows lock screen for
+      this account only, it never exposes other sessions.
+
+      IMPORTANT: verify the msedge.exe path below matches this machine's
+      actual Edge install location before applying (see README.md).
+    -->
+    <Profiles>
+        <Profile Id="{9A3B1F2E-6C4D-4A8B-9E2F-1D5C7A8B9C0D}">
+            <KioskModeApp
+                v4:ClassicAppPath="%ProgramFiles(x86)%\Microsoft\Edge\Application\msedge.exe"
+                v4:ClassicAppArguments="--kiosk https://www.msn.com --edge-kiosk-type=public-browsing --kiosk-idle-timeout-minutes=5 --no-first-run" />
+        </Profile>
+    </Profiles>
+    <Configs>
+        <Config>
+            <Account>KioskUser</Account>
+            <DefaultProfile Id="{9A3B1F2E-6C4D-4A8B-9E2F-1D5C7A8B9C0D}"/>
+        </Config>
+    </Configs>
+</AssignedAccessConfiguration>
