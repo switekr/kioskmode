@@ -10,6 +10,11 @@ publish/
 *.user
 .vs/
 
+# Maven build output
+target/
+*.class
+dependency-reduced-pom.xml
+
 # Runtime-generated local config (auto-created with defaults on first run)
 kiosk.settings.json
 

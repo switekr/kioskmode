@@ -14,6 +14,10 @@ Two independent approaches live in this repo:
   (`CreateDesktop`/`SwitchDesktop`). No second account, no Enterprise
   requirement, instant switch via hotkey instead of a sign-in. See
   [KioskLauncher/README.md](KioskLauncher/README.md).
+- **[JKioskLauncher/](JKioskLauncher/)** - the same approach ported to
+  Java/JNA. Untested (no JDK on the machine it was written on) - see the
+  warning at the top of [JKioskLauncher/README.md](JKioskLauncher/README.md)
+  before relying on it.
 
 ## Why this works
 
