@@ -1,0 +1,4 @@
+# Windows-only project (PowerShell + a Windows Forms app) - normalize
+# everything to CRLF in the working tree, LF in the repo, so `git add`
+# stops warning about it on every commit.
+* text=auto eol=crlf
