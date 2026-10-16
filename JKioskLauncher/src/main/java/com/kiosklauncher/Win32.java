@@ -44,7 +44,21 @@ public final class Win32 {
     public static final int VK_CONTROL = 0x11;
     public static final int VK_SHIFT = 0x10;
     public static final int VK_K = 0x4B;
+    public static final int VK_O = 0x4F;
+    public static final int VK_S = 0x53;
     public static final int VK_F4 = 0x73;
+
+    // WinEvent hook / window management (used by FileDialogWatchdog).
+    public static final int EVENT_OBJECT_CREATE = 0x8000;
+    public static final int EVENT_OBJECT_SHOW = 0x8002;
+    public static final int GWL_EXSTYLE = -20;
+    public static final int WS_EX_LAYERED = 0x00080000;
+    public static final int LWA_ALPHA = 0x2;
+    public static final int WINEVENT_OUTOFCONTEXT = 0x0000;
+    public static final int OBJID_WINDOW = 0;
+    public static final int GA_ROOT = 2;
+    public static final int WM_CLOSE = 0x0010;
+    public static final int SW_HIDE = 0;
 
     public static final int MOD_ALT = 0x0001;
     public static final int MOD_CONTROL = 0x0002;
@@ -135,6 +149,17 @@ public final class Win32 {
         Pointer callback(int nCode, Pointer wParam, Pointer lParam);
     }
 
+    /** WINEVENTPROC - invoked on the hook-installing thread (out-of-context hooks need its message loop). */
+    public interface WinEventProc extends StdCallLibrary.StdCallCallback {
+        void callback(Pointer hWinEventHook, int event, Pointer hwnd, int idObject, int idChild,
+                      int idEventThread, int dwmsEventTime);
+    }
+
+    /** TIMERPROC - with a NULL window it is called from DispatchMessage on the thread that set the timer. */
+    public interface TimerProc extends StdCallLibrary.StdCallCallback {
+        void callback(Pointer hwnd, int uMsg, Pointer idEvent, int dwTime);
+    }
+
     // ---- user32.dll --------------------------------------------------------
 
     public interface User32 extends StdCallLibrary {
@@ -187,6 +212,31 @@ public final class Win32 {
         Pointer CreateWindowEx(int dwExStyle, String lpClassName, String lpWindowName, int dwStyle,
                                 int x, int y, int nWidth, int nHeight,
                                 Pointer hWndParent, Pointer hMenu, Pointer hInstance, Pointer lpParam);
+
+        Pointer SetWinEventHook(int eventMin, int eventMax, Pointer hmodWinEventProc, WinEventProc pfnWinEventProc,
+                                int idProcess, int idThread, int dwFlags);
+
+        boolean UnhookWinEvent(Pointer hWinEventHook);
+
+        int GetClassName(Pointer hWnd, char[] lpClassName, int nMaxCount);
+
+        Pointer GetAncestor(Pointer hwnd, int gaFlags);
+
+        boolean PostMessage(Pointer hWnd, int msg, Pointer wParam, Pointer lParam);
+
+        boolean ShowWindow(Pointer hWnd, int nCmdShow);
+
+        int GetWindowLong(Pointer hWnd, int nIndex);
+
+        int SetWindowLong(Pointer hWnd, int nIndex, int dwNewLong);
+
+        boolean SetLayeredWindowAttributes(Pointer hwnd, int crKey, byte bAlpha, int dwFlags);
+
+        boolean IsWindow(Pointer hWnd);
+
+        Pointer SetTimer(Pointer hWnd, Pointer nIDEvent, int uElapse, TimerProc lpTimerFunc);
+
+        boolean KillTimer(Pointer hWnd, Pointer uIDEvent);
     }
 
     // ---- kernel32.dll --------------------------------------------------------

@@ -43,6 +43,11 @@ final class KioskDesktopGuard {
 
     private volatile Runnable exitHandler;
 
+    private final FileDialogWatchdog fileDialogWatchdog = new FileDialogWatchdog();
+
+    /** Set when the guard thread could not set itself up; start() rethrows it. */
+    private volatile RuntimeException failure;
+
     KioskDesktopGuard(Pointer desktop) {
         this.desktop = desktop;
     }
@@ -64,10 +69,16 @@ final class KioskDesktopGuard {
             Thread.currentThread().interrupt();
             throw new IllegalStateException(e);
         }
+
+        RuntimeException error = failure;
+        if (error != null) {
+            throw error;
+        }
     }
 
     private void runLoop() {
         if (!Win32.User32.INSTANCE.SetThreadDesktop(desktop)) {
+            failure = new IllegalStateException("SetThreadDesktop nie powiodło się - strażnik kiosku nie działa.");
             ready.countDown();
             return;
         }
@@ -87,6 +98,17 @@ final class KioskDesktopGuard {
         hookProc = this::hookCallback;
         hookHandle = Win32.User32.INSTANCE.SetWindowsHookEx(Win32.WH_KEYBOARD_LL, hookProc, Pointer.NULL, 0);
 
+        // Fail closed: without the dialog watchdog the customer could browse
+        // and upload the operator's files, so don't let the kiosk start.
+        try {
+            fileDialogWatchdog.install();
+        } catch (RuntimeException e) {
+            failure = e;
+            ready.countDown();
+            cleanupHooks(messageWindow);
+            return;
+        }
+
         ready.countDown();
 
         Win32.MSG msg = new Win32.MSG();
@@ -103,7 +125,13 @@ final class KioskDesktopGuard {
             Win32.User32.INSTANCE.DispatchMessage(msg);
         }
 
-        if (!Pointer.NULL.equals(hookHandle)) {
+        cleanupHooks(messageWindow);
+    }
+
+    private void cleanupHooks(Pointer messageWindow) {
+        fileDialogWatchdog.uninstall();
+        // Note: in JNA, Pointer.NULL is a null reference, not a Pointer object.
+        if (hookHandle != null) {
             Win32.User32.INSTANCE.UnhookWindowsHookEx(hookHandle);
         }
         Win32.User32.INSTANCE.UnregisterHotKey(messageWindow, HOTKEY_ID);
@@ -114,9 +142,16 @@ final class KioskDesktopGuard {
                 || Pointer.nativeValue(wParam) == Win32.WM_SYSKEYDOWN)) {
             Win32.KBDLLHOOKSTRUCT data = new Win32.KBDLLHOOKSTRUCT(lParam);
             boolean altDown = (Win32.User32.INSTANCE.GetAsyncKeyState(Win32.VK_MENU) & 0x8000) != 0;
+            boolean ctrlDown = (Win32.User32.INSTANCE.GetAsyncKeyState(Win32.VK_CONTROL) & 0x8000) != 0;
 
             if (altDown && data.vkCode == Win32.VK_F4) {
                 return new Pointer(1); // swallow Alt+F4
+            }
+            // Ctrl+O / Ctrl+S would open a file dialog; swallowing them just
+            // avoids a flash of the dialog - FileDialogWatchdog is what
+            // actually guarantees it (menus and buttons open it too).
+            if (ctrlDown && (data.vkCode == Win32.VK_O || data.vkCode == Win32.VK_S)) {
+                return new Pointer(1);
             }
         }
 

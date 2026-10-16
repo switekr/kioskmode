@@ -91,7 +91,22 @@ final class KioskController {
                 handler.run();
             }
         });
-        guard.start();
+        try {
+            guard.start();
+        } catch (RuntimeException e) {
+            // Guard couldn't arm (hotkey/dialog watchdog) - never hand the
+            // screen to the customer in that state. Undo everything; we're
+            // still on the operator's desktop, so no lock is needed.
+            guard.stop();
+            guard = null;
+            if (browserProcess != null) {
+                killProcessTree(browserProcess);
+                browserProcess = null;
+            }
+            Win32.User32.INSTANCE.CloseDesktop(kioskDesktop);
+            kioskDesktop = null;
+            throw new IOException("Nie udało się uzbroić strażnika kiosku: " + e.getMessage(), e);
+        }
 
         Win32.User32.INSTANCE.SwitchDesktop(kioskDesktop);
     }

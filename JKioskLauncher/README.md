@@ -40,10 +40,65 @@ kodu w C/JNI. Wszystkie deklaracje są w [`Win32.java`](src/main/java/com/kioskl
   którego oczekujemy - bez dodatkowych zabiegów, w przeciwieństwie np. do
   Go, gdzie goroutines wymagają jawnego `runtime.LockOSThread()`.
 
+## Blokada okien wyboru pliku
+
+Przeglądarka kiosku działa na **koncie operatora** - izolacja desktopu
+ukrywa jego okna, ale nie pliki. Bez dodatkowej ochrony okno "Otwórz
+plik" (załącznik w webmailu, Ctrl+O, "Zapisz jako") pokazałoby cały profil
+operatora i pozwoliło wysłać dowolny plik. Edge w trybie kiosku nie
+blokuje tych okien sam z siebie, a polityka, która to robi
+(`AllowFileSelectionDialogs`), jest maszynowa - wyłączyłaby upload także w
+Edge operatora na tym samym komputerze.
+
+Dlatego `FileDialogWatchdog` zamyka takie okna w samej aplikacji, bez
+rejestru i uprawnień admina. Hooki `SetWinEventHook` na wątku strażnika
+(przypiętym do desktopu kiosku) działają w dwóch krokach:
+
+1. gdy powstaje okno dialogowe najwyższego poziomu (`#32770`), od razu
+   robimy je w pełni przezroczystym (`WS_EX_LAYERED`, alfa 0) - zanim
+   zdąży się pierwszy raz pokazać, więc nie ma czego "mrugnąć";
+2. gdy w środku pojawi się kontrolka widoku plików - rozpoznawana po
+   **klasie okna** (`DirectUIHWND` dla nowego stylu, `SHELLDLL_DefView` dla
+   klasycznego), więc niezależnie od języka Windows - okno jest ukrywane i
+   dostaje `WM_CLOSE` (dla przeglądarki to zwykłe "Anuluj").
+
+Wcześniejsza wersja reagowała dopiero na krok 2, czyli już po pokazaniu
+ramki okna - okno było widoczne ok. 11-19 ms (jedna klatka 60 Hz), co
+było widać jako mrugnięcie. Teraz sonda w teście mierzy 0 ms widoczności.
+
+Dodatkowo Ctrl+O i Ctrl+S są połykane przez istniejący hook klawiatury.
+Inne natywne okna (np. systemowy dialog drukowania lub zwykły komunikat)
+nie są zamykane - odzyskują widoczność po 1,5 s, więc są tylko opóźnione,
+nie utracone. Jeśli na bardzo wolnej maszynie kontrolka widoku plików
+pojawi się dopiero po tych 1,5 s, okno i tak zostanie zamknięte, ale
+mogło być przez chwilę widoczne.
+
+Jeśli strażnik nie da się uzbroić (hook się nie zainstaluje), kiosk w
+ogóle się nie uruchamia - fail closed - zamiast oddać ekran klientowi bez
+ochrony.
+
+**Czego to NIE chroni:** wpisania `file:///C:/Users/...` w pasku adresu.
+Klient nie wyśle w ten sposób pliku (nie ma okna wyboru), ale mógłby
+przeglądać pliki operatora i skopiować ich tekst do poczty. Zamyka to
+dopiero polityka `URLBlocklist = file://*` - wymaga GPO/Intune i działa
+maszynowo, więc to naturalny dodatek przy wdrożeniu korporacyjnym, jeśli
+akceptowalny jest jej wpływ na Edge operatora. Wersja C# (`KioskLauncher/`)
+nie ma jeszcze tej ochrony.
+
+Test bez klikania (otwiera prawdziwe `OpenFileDialog` na tymczasowym,
+nieaktywnym desktopie): przebieg kontrolny bez strażnika musi "zawisnąć",
+5 przebiegów ze strażnikiem musi zwrócić "Cancel" bez widocznego mignięcia
+(sonda mierzy, jak długo okno jest widoczne; próg ok. jednej klatki), a
+zwykły `MessageBox` ze strażnikiem musi zostać otwarty i znów być widoczny:
+
+```bash
+mvn package
+java -cp "target/JKioskLauncher.jar;target/test-classes" com.kiosklauncher.FileDialogWatchdogSmokeTest
+```
+
 ## Budowanie i uruchamianie
 
-Wymaga JDK 17+ i Mavena (żadnego z nich nie ma na tej maszynie - patrz
-ostrzeżenie wyżej).
+Wymaga JDK 17+ i Mavena (przetestowane na JDK 21 / Maven 3.9).
 
 ```bash
 mvn package
@@ -77,6 +132,10 @@ C#:
    przeglądarki).
 4. Podwójne uruchomienie `.jar` - drugie powinno pokazać komunikat "już
    działa" i zakończyć się, nie otwierać drugiego tray icon.
+5. W kiosku w webmailu kliknij "dołącz plik", a także Ctrl+O i Ctrl+S -
+   żadne okno wyboru pliku nie może pozostać na ekranie (test dymny
+   sprawdza to na `OpenFileDialog` z PowerShella, ale nie na prawdziwym
+   Edge - to wymaga ręcznego przeklikania).
 
 Jeśli `Ctrl+Alt+Shift+K` nie zadziała, najpierw sprawdź `Ctrl+Alt+Del` →
 Menedżer zadań → zakończ `java.exe` jako awaryjne wyjście - dokładnie tak
