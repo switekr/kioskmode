@@ -41,6 +41,10 @@ can't even reach their own desktop, taskbar, or Start menu.
 - `Apply-KioskConfig.ps1` - applies (or `-Remove`s) that XML via the local
   MDM Bridge WMI Provider, using a throwaway SYSTEM scheduled task (no
   third-party tools needed).
+- `Setup-DownloadHandoff.ps1` / `Move-KioskDownloads.ps1` - securely hands
+  off anything the customer downloads (bank statements, attachments) to
+  the operator instead of deleting it or leaving it reachable by the next
+  customer. See "Downloaded attachments" below.
 
 ## Deploy (one-time setup)
 
@@ -96,6 +100,51 @@ This clears the Assigned Access policy (takes effect on `KioskUser`'s next
 sign-in). It won't undo Start menu state Windows may have cached for that
 account, which doesn't matter here since the account is single-purpose.
 
+## Downloaded attachments
+
+A customer checking email/banking will sometimes download something - a
+statement, an attachment. Two requirements to satisfy at once: the next
+customer must never be able to see it, but it shouldn't just be destroyed
+either - the operator needs it handed off somewhere safe.
+
+`Setup-DownloadHandoff.ps1` sets this up:
+
+1. Locks down `KioskUser`'s own Downloads folder with NTFS permissions so
+   that account can create/write files there but cannot list, read, or
+   delete anything in it - genuine write-only "mailbox" semantics. A
+   customer (or Edge itself, running as `KioskUser`) can't browse to, open,
+   or even re-open a file right after downloading it. Nothing about Edge's
+   configuration changes - it keeps downloading to its normal default
+   location, which is what keeps this simple and keeps it scoped to only
+   `KioskUser`: no Group Policy/registry redirection that could accidentally
+   affect the operator's own Edge on the same machine.
+2. Registers a SYSTEM-run scheduled task (`Move-KioskDownloads.ps1`, every
+   minute) that sweeps that folder and moves each finished download into
+   `C:\ProgramData\Kiosk\ForOperator` - readable only by
+   `Administrators` and whichever account you name as `-OperatorAccount`
+   (defaults to whoever runs the setup script). SYSTEM's unrestricted
+   access is what lets the task read files `KioskUser` itself cannot.
+   Moves are logged to `C:\ProgramData\Kiosk\handoff.log`; files older than
+   30 days (configurable) are purged if nobody picked them up.
+
+Run once, after `KioskUser` has signed in at least once (so its Downloads
+folder exists):
+
+```powershell
+.\Setup-DownloadHandoff.ps1
+```
+
+To undo (keeps any files already handed off):
+
+```powershell
+.\Setup-DownloadHandoff.ps1 -Remove
+```
+
+Note on locale: built-in group names like "Administrators" don't resolve
+by plain name on non-English Windows (e.g. it's "Administratorzy" on
+Polish installs) - the script uses the well-known SID (`*S-1-5-32-544`)
+instead, which works regardless of display language.
+
 ## Optional hardening
 
 Set these via Group Policy (`gpedit.msc` → Computer Configuration →
@@ -104,9 +153,12 @@ further than the defaults in `KioskConfig.xml`:
 
 - `URLAllowlist` / `URLBlocklist` - restrict navigation to specific sites
   (e.g. only the bank's domain and a webmail provider).
-- `KioskDeleteDownloadsOnExit` - wipe anything downloaded once the kiosk
-  session ends.
 - `Enumerate local users on domain-joined computers` (Computer
   Configuration → Administrative Templates → System → Logon) - only needed
   if this PC is domain/Entra-joined and `KioskUser` doesn't show up on the
   sign-in/switch-user screen.
+
+Deliberately **not** listed here: `KioskDeleteDownloadsOnExit`. It wipes
+downloads the moment the kiosk session resets, which races against (and
+can defeat) the handoff described above - use the drop-box approach
+instead of this policy, not alongside it.
