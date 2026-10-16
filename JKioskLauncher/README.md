@@ -40,6 +40,39 @@ kodu w C/JNI. Wszystkie deklaracje są w [`Win32.java`](src/main/java/com/kioskl
   którego oczekujemy - bez dodatkowych zabiegów, w przeciwieństwie np. do
   Go, gdzie goroutines wymagają jawnego `runtime.LockOSThread()`.
 
+## Tryby pracy z plikami: `FileMode`
+
+Obsługa plików (dwie następne sekcje) ma **dwa tryby**, wybierane w
+`kiosk.settings.json`:
+
+```json
+"FileMode": "block"
+```
+
+| `FileMode` | uploady | pobieranie | Eksplorator |
+|---|---|---|---|
+| **`"block"`** (domyślny) | zablokowane | **zablokowane** - żaden plik nie jest zapisywany | zamykany |
+| **`"download"`** | zablokowane | tylko do folderu z `DownloadDir`, potem przekazanie do `handoff` | zamykany |
+
+1. **`block`** - żadnej pracy z plikami: nie da się niczego wgrać ani
+   pobrać. `DownloadDir` jest ignorowany, nic nie powstaje na dysku.
+2. **`download`** - klient może pobierać, ale wyłącznie do jednego,
+   zdefiniowanego katalogu (`DownloadDir`, patrz "Folder pobierania"); po
+   sesji pliki są przenoszone do `handoff`. Upload nadal jest zablokowany.
+
+Nie ma trybu "wyłączone" i to celowo: kiosk działa na koncie operatora, więc
+natywne okno wyboru pliku w jakimkolwiek trybie ujawniłoby jego pliki.
+
+Brak klucza, wartość nierozpoznana lub literówka (`"downlaod"`) dają
+**`block`** - błąd w pliku może kiosk tylko zaostrzyć, nigdy poluzować. Wielkość
+liter i spacje wokół wartości nie mają znaczenia. Stary klucz `FileGuard` jest
+ignorowany (a więc = `block`). Plik czytany jest z katalogu jara i **tylko
+przy starcie aplikacji** - po zmianie uruchom ją ponownie.
+
+Od trybu **nie zależą** i działają zawsze: izolowany desktop, skrót
+`Ctrl+Alt+Shift+K` z blokadą ekranu przy wyjściu, blokada Alt+F4 oraz świeży
+profil przeglądarki.
+
 ## Blokada okien wyboru pliku
 
 Przeglądarka kiosku działa na **koncie operatora** - izolacja desktopu
@@ -59,12 +92,43 @@ rejestru i uprawnień admina. Hooki `SetWinEventHook` na wątku strażnika
    zdąży się pierwszy raz pokazać, więc nie ma czego "mrugnąć";
 2. gdy w środku pojawi się kontrolka widoku plików - rozpoznawana po
    **klasie okna** (`DirectUIHWND` dla nowego stylu, `SHELLDLL_DefView` dla
-   klasycznego), więc niezależnie od języka Windows - okno jest ukrywane i
-   dostaje `WM_CLOSE` (dla przeglądarki to zwykłe "Anuluj").
+   klasycznego), więc niezależnie od języka Windows - okno jest ukrywane i:
+   - **tryb `block`**: każde takie okno dostaje `WM_CLOSE`, czyli dla
+     przeglądarki zwykłe "Anuluj" - nic nie zostaje wgrane ani zapisane;
+   - **tryb `download`**, **okno otwierania** (pole nazwy pliku puste - to
+     upload): `WM_CLOSE`, jak wyżej;
+   - **tryb `download`**, **okno zapisu** (pole nazwy ma wpisaną sugerowaną
+     nazwę - tak wygląda pobieranie w Edge): jest **zatwierdzane** - nazwa
+     zostaje, ścieżka jest podmieniana na jeden wskazany folder pobierania
+     (patrz niżej).
+
+Okno otwierania od zapisu odróżniamy po wpisanej nazwie, a kontrolki
+znajdujemy po klasie i identyfikatorze, nie po tytułach ani napisach na
+przyciskach - więc to też nie zależy od języka systemu.
+
+**Pusty tekst to nie wyrok.** Tuż po pojawieniu się okna zapisu Edge ma już
+pole nazwy, ale jeszcze bez tekstu (w pomiarach ok. co piątego pobranie).
+Wcześniejsza wersja brała to za upload i anulowała - pobranie po cichu
+znikało (5 z 8 przebiegów testu nie zapisywało pliku). Teraz pusta nazwa
+oznacza "spróbuj ponownie": dopiero jeśli pole jest puste jeszcze po ok.
+1,5 s, okno jest uznawane za upload i anulowane. Okno cały czas pozostaje
+ukryte, więc klient nie widzi różnicy; blokowany upload po prostu trwa
+1,5 s dłużej. Diagnostyka: `-Dkiosk.trace=true` wypisuje na stderr, co
+strażnik zdecydował i dlaczego.
 
 Wcześniejsza wersja reagowała dopiero na krok 2, czyli już po pokazaniu
 ramki okna - okno było widoczne ok. 11-19 ms (jedna klatka 60 Hz), co
 było widać jako mrugnięcie. Teraz sonda w teście mierzy 0 ms widoczności.
+
+**Okna Eksploratora plików** są zamykane tym samym mechanizmem. Przeglądarka
+ma drogę do nich: "Pokaż w folderze" na liście pobranych (Ctrl+J). Edge
+uruchamia wtedy nowy `explorer.exe`, a ponieważ na desktopie kiosku nie ma
+powłoki, otwiera on pełne okno folderu (`CabinetWClass`) - czyli przeglądarkę
+plików po całym profilu operatora (sprawdzone na żywo na tymczasowym
+desktopie). Takie okno staje się przezroczyste w chwili utworzenia i dostaje
+`WM_CLOSE`, a proces `explorer.exe`, który je otworzył, jest zabijany -
+**tylko** jeśli powstał po uzbrojeniu strażnika. Twój własny shell startuje
+przy logowaniu, więc ta reguła go nie dotyka (test sprawdza, że przeżywa).
 
 Dodatkowo Ctrl+O i Ctrl+S są połykane przez istniejący hook klawiatury.
 Inne natywne okna (np. systemowy dialog drukowania lub zwykły komunikat)
@@ -85,15 +149,97 @@ maszynowo, więc to naturalny dodatek przy wdrożeniu korporacyjnym, jeśli
 akceptowalny jest jej wpływ na Edge operatora. Wersja C# (`KioskLauncher/`)
 nie ma jeszcze tej ochrony.
 
-Test bez klikania (otwiera prawdziwe `OpenFileDialog` na tymczasowym,
-nieaktywnym desktopie): przebieg kontrolny bez strażnika musi "zawisnąć",
-5 przebiegów ze strażnikiem musi zwrócić "Cancel" bez widocznego mignięcia
-(sonda mierzy, jak długo okno jest widoczne; próg ok. jednej klatki), a
-zwykły `MessageBox` ze strażnikiem musi zostać otwarty i znów być widoczny:
+Test bez klikania (prawdziwe okna wspólne z PowerShella na tymczasowym,
+nieaktywnym desktopie): przebieg kontrolny okna otwierania bez strażnika
+musi "zawisnąć"; ze strażnikiem okno otwierania musi zwrócić "Cancel" bez
+widocznego mignięcia (sonda mierzy, jak długo okno jest widoczne; próg ok.
+jednej klatki); w trybie `download` okno zapisu z nazwą musi zostać
+zatwierdzone ścieżką w folderze pobierania (a gdy nazwa jest zajęta -
+`nazwa (1).ext`, bez pytania o nadpisanie), a z pustą nazwą - anulowane; w
+trybie `block` anulowane muszą być wszystkie okna, także zapisu z dobrą
+nazwą, i nic nie może trafić do folderu; zwykły `MessageBox` musi zostać
+otwarty i znów być widoczny:
 
 ```bash
 mvn package
 java -cp "target/JKioskLauncher.jar;target/test-classes" com.kiosklauncher.FileDialogWatchdogSmokeTest
+```
+
+## Folder pobierania
+
+Dotyczy trybu `"FileMode": "download"` (w `block` nic się nie pobiera, a
+`DownloadDir` jest ignorowany). Pobrane pliki trafiają do **jednego folderu**
+(domyślnie `%LOCALAPPDATA%\JKioskLauncher\downloads`, zmiana przez
+`DownloadDir` w `kiosk.settings.json`, np. `"DownloadDir": "C:\\tmp"`; wersja
+C# ignoruje ten klucz), bez okna "Zapisz jako" dla klienta.
+
+**Dlaczego nie da się tego ustawić samą konfiguracją przeglądarki.** Pierwszy
+pomysł - wstępnie zasiać profil (`download.default_directory`,
+`prompt_for_download=false` w `Preferences`, przekazany przez
+`--user-data-dir`) - działa w zwykłym oknie Edge, ale **nie w trybie kiosku**:
+sprawdzone na prawdziwym Edge 155 - kiosk nadpisuje folder własnym
+(`%LOCALAPPDATA%\Microsoft\Edge\KioskDownloads`) i wymusza okno "Zapisz jako"
+przy każdym pobraniu. Wcześniejsza wersja strażnika anulowała to okno, a
+anulowane pobranie po prostu się nie dzieje. Polityki Edge odpadają, bo kiosk
+działa na koncie operatora, więc dotknęłyby też jego własnej przeglądarki.
+Stąd obecne rozwiązanie: strażnik sam odpowiada na okno zapisu (patrz wyżej).
+
+Przeglądarka dostaje przy tym własny, świeży profil (`--user-data-dir`,
+kasowany przy każdym starcie): nic nie przechodzi między klientami, a
+działający Edge operatora nie może "przechwycić" uruchomienia (Chromium
+oddaje drugi start na tym samym profilu pierwszemu procesowi - na jego
+desktopie).
+
+Po sesji (`Ctrl+Alt+Shift+K`, już po zablokowaniu ekranu) `DownloadCollector`
+przenosi gotowe pliki z folderu pobierania do jego podfolderu
+`<folder pobierania>\handoff\<yyyyMMdd-HHmmss>\` (np. `C:\tmp\handoff\...`) i
+zapisuje je w `handoff\handoff.log`; niedokończone pobrania (`.crdownload`,
+`.tmp`) są usuwane. Poza podfolderem `handoff` folder pobierania zostaje
+pusty dla następnego klienta - to samo dzieje się przy starcie, gdyby
+poprzednia sesja skończyła się awarią. Podfolder `handoff` nigdy nie jest
+"przenoszony sam do siebie" (zbierane są tylko zwykłe pliki).
+
+**To ogranicza ekspozycję, ale nie jest granicą bezpieczeństwa.** Kiosk działa
+na koncie operatora, więc wszystko, co operator może odczytać, klient może
+otworzyć przez `file:///` - w tym pobrane PDF-y. Ponieważ `handoff` leży
+**wewnątrz** folderu pobierania, listing `file:///C:/tmp/` pokazuje go
+klientowi od razu, razem z plikami poprzednich sesji (gdy leżał obok, trzeba
+było wiedzieć, że istnieje). Szczelne zamknięcie to polityka
+`URLBlocklist = file://*` albo osobna tożsamość procesu kiosku. Dotyczy to
+dokumentów klientów, więc przy wdrożeniu korporacyjnym warto to potraktować
+poważnie.
+
+"Pokaż w folderze" otwierało Eksplorator - to jest już zamykane (patrz wyżej).
+Nie sprawdzone i nie zablokowane: "Otwórz plik" na pobranym pliku uruchomi
+skojarzony program (np. czytnik PDF) jako operator na desktopie kiosku. To
+ta sama klasa luki co Eksplorator - ogólne rozwiązanie to zamykanie każdego
+okna najwyższego poziomu, które nie należy do przeglądarki - ale wymaga
+starannej białej listy (IME, nakładki systemowe), więc nie jest zrobione.
+
+Testy: `DownloadFolderSmokeTest` uruchamia **prawdziwy Edge w trybie kiosku**
+(te same flagi co aplikacja) na tymczasowym desktopie i lokalnym serwerze
+HTTP wymuszającym pobranie, w obu trybach. Tryb `download` - plik musi być
+kompletny w folderze docelowym i nigdzie indziej (ani w systemowym Pobrane,
+ani w `KioskDownloads`); tryb `block` - plik nie może powstać nigdzie. W
+obu na ekranie nie może zostać żadne okno. `-DviaPage=true -Dext=pdf`
+sprawdza pobranie wywołane skryptem ze strony. `DownloadCollectorTest`
+sprawdza przenoszenie plików i odczyt `FileMode` (w tym, że literówka i stary
+klucz dają `block`), a `ExplorerWindowTest` uruchamia
+`explorer.exe /select,...` na tymczasowym desktopie (tak jak "Pokaż w
+folderze") i sprawdza, w obu trybach, że strażnik zamyka okno w ułamku
+klatki, nie zostawia procesu, a shell operatora przeżywa.
+
+Test pobierania jest jedynym, który wykrył wyścig z pustą nazwą - przy
+jednokrotnym uruchomieniu łatwo go przeoczyć, bo wychodzi ok. raz na kilka
+przebiegów. Po poprawce: 15 z 15 przebiegów ze śladem i 8 z 8 bez. Pomiar
+mignięcia Eksploratora zależy od obciążenia maszyny - raz zdarzył się
+pojedynczy odczyt ponad próg po serii ciężkich testów, ponowne uruchomienie
+dawało 2-4 ms:
+
+```bash
+java -cp "target/JKioskLauncher.jar;target/test-classes" com.kiosklauncher.DownloadFolderSmokeTest
+java -cp "target/JKioskLauncher.jar;target/test-classes" com.kiosklauncher.DownloadCollectorTest
+java -cp "target/JKioskLauncher.jar;target/test-classes" com.kiosklauncher.ExplorerWindowTest
 ```
 
 ## Budowanie i uruchamianie
@@ -133,9 +279,13 @@ C#:
 4. Podwójne uruchomienie `.jar` - drugie powinno pokazać komunikat "już
    działa" i zakończyć się, nie otwierać drugiego tray icon.
 5. W kiosku w webmailu kliknij "dołącz plik", a także Ctrl+O i Ctrl+S -
-   żadne okno wyboru pliku nie może pozostać na ekranie (test dymny
-   sprawdza to na `OpenFileDialog` z PowerShella, ale nie na prawdziwym
-   Edge - to wymaga ręcznego przeklikania).
+   żadne okno wyboru pliku nie może pozostać na ekranie (test okien
+   sprawdza to na oknach z PowerShella, ale nie na prawdziwym webmailu).
+6. Pobierz załącznik z poczty - nie może się pokazać okno "Zapisz jako", a
+   plik ma się znaleźć w folderze pobierania; po `Ctrl+Alt+Shift+K` i
+   odblokowaniu - w `handoff\<data>`. Wejdź też w Ctrl+J i "Pokaż w
+   folderze" - okno Eksploratora nie może pozostać. Sprawdź "Otwórz plik"
+   (patrz "Folder pobierania").
 
 Jeśli `Ctrl+Alt+Shift+K` nie zadziała, najpierw sprawdź `Ctrl+Alt+Del` →
 Menedżer zadań → zakończ `java.exe` jako awaryjne wyjście - dokładnie tak

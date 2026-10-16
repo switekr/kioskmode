@@ -31,40 +31,94 @@ public final class KioskConfig {
 
     public int idleTimeoutMinutes = 5;
 
+    /**
+     * How the kiosk treats files. There is deliberately no "off": the kiosk
+     * runs as the operator's own account, so a native file dialog would
+     * expose the operator's files either way.
+     */
+    public enum FileMode {
+        /** No file work at all: uploads, downloads and Explorer windows are all blocked. */
+        BLOCK,
+        /** Downloads only, and only into {@link KioskConfig#downloadDir}; uploads and Explorer stay blocked. */
+        DOWNLOAD
+    }
+
+    /**
+     * "FileMode" in kiosk.settings.json: "block" or "download". Absent or unrecognised
+     * means BLOCK - a typo can only ever make the kiosk stricter, never looser.
+     * Extra key vs. the C# version, which simply ignores it.
+     */
+    public FileMode fileMode = FileMode.BLOCK;
+
+    /**
+     * The one folder downloads go to in FileMode "download" (ignored in "block").
+     * Null = default (%LOCALAPPDATA%\JKioskLauncher\downloads). Extra key vs. the
+     * C# version, which simply ignores it.
+     */
+    public String downloadDir;
+
+    /** Per-user data root for the kiosk profile, downloads and handoff folders. */
+    static Path dataDirectory() {
+        String local = System.getenv("LOCALAPPDATA");
+        Path base = local != null ? Path.of(local) : Path.of(System.getProperty("user.home"), "AppData", "Local");
+        return base.resolve("JKioskLauncher");
+    }
+
+    /** The configured download folder, or the default under {@link #dataDirectory()}. */
+    Path resolvedDownloadDir() {
+        return downloadDir != null && !downloadDir.isBlank()
+                ? Path.of(downloadDir)
+                : dataDirectory().resolve("downloads");
+    }
+
     public static KioskConfig load() {
         Path path = configPath();
-        KioskConfig cfg = new KioskConfig();
 
         if (Files.exists(path)) {
             try {
-                String json = Files.readString(path, StandardCharsets.UTF_8);
-                cfg.url = extractString(json, "Url", cfg.url);
-                cfg.browserPath = extractNullableString(json, "BrowserPath");
-                cfg.kioskType = extractString(json, "KioskType", cfg.kioskType);
-                cfg.idleTimeoutMinutes = extractInt(json, "IdleTimeoutMinutes", cfg.idleTimeoutMinutes);
-                return cfg;
+                return parse(Files.readString(path, StandardCharsets.UTF_8));
             } catch (IOException e) {
                 // malformed/unreadable config file - fall through to defaults below
             }
         }
 
+        KioskConfig cfg = new KioskConfig();
         cfg.save();
         return cfg;
     }
 
+    /** Reads the settings from JSON text; any key that is absent keeps its default. */
+    static KioskConfig parse(String json) {
+        KioskConfig cfg = new KioskConfig();
+        cfg.url = extractString(json, "Url", cfg.url);
+        cfg.browserPath = extractNullableString(json, "BrowserPath");
+        cfg.kioskType = extractString(json, "KioskType", cfg.kioskType);
+        cfg.idleTimeoutMinutes = extractInt(json, "IdleTimeoutMinutes", cfg.idleTimeoutMinutes);
+        cfg.fileMode = parseFileMode(extractString(json, "FileMode", null));
+        cfg.downloadDir = extractNullableString(json, "DownloadDir");
+        return cfg;
+    }
+
     public void save() {
+        try {
+            Files.writeString(configPath(), toJson(), StandardCharsets.UTF_8);
+        } catch (IOException e) {
+            // best-effort - if we can't write it, the in-memory defaults are still used
+        }
+    }
+
+    String toJson() {
         String browserPathJson = browserPath == null ? "null" : "\"" + escape(browserPath) + "\"";
+        String downloadDirJson = downloadDir == null ? "null" : "\"" + escape(downloadDir) + "\"";
         String json = "{\n"
                 + "  \"Url\": \"" + escape(url) + "\",\n"
                 + "  \"BrowserPath\": " + browserPathJson + ",\n"
                 + "  \"KioskType\": \"" + escape(kioskType) + "\",\n"
-                + "  \"IdleTimeoutMinutes\": " + idleTimeoutMinutes + "\n"
+                + "  \"IdleTimeoutMinutes\": " + idleTimeoutMinutes + ",\n"
+                + "  \"FileMode\": \"" + fileMode.name().toLowerCase() + "\",\n"
+                + "  \"DownloadDir\": " + downloadDirJson + "\n"
                 + "}\n";
-        try {
-            Files.writeString(configPath(), json, StandardCharsets.UTF_8);
-        } catch (IOException e) {
-            // best-effort - if we can't write it, the in-memory defaults are still used
-        }
+        return json;
     }
 
     private static Path configPath() {
@@ -99,7 +153,12 @@ public final class KioskConfig {
         return m.find() ? Integer.parseInt(m.group(1)) : fallback;
     }
 
-    private static String escape(String s) {
+    /** "download" (any letter case) -> DOWNLOAD; everything else, including absent or misspelled, -> BLOCK. */
+    static FileMode parseFileMode(String value) {
+        return value != null && value.trim().equalsIgnoreCase("download") ? FileMode.DOWNLOAD : FileMode.BLOCK;
+    }
+
+    static String escape(String s) {
         return s.replace("\\", "\\\\").replace("\"", "\\\"");
     }
 

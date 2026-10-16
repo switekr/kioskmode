@@ -28,29 +28,38 @@ final class DialogHarness {
     record Outcome(String result, double visibleMs) {
     }
 
+    /** The name every Save dialog in these tests is pre-filled with (Edge pre-fills the suggested download name). */
+    static final String SUGGESTED_NAME = "report.txt";
+
     enum Kind {
-        FILE_DIALOG_VISTA("$d.AutoUpgradeEnabled = $true;", true),
-        FILE_DIALOG_CLASSIC("$d.AutoUpgradeEnabled = $false;", true),
+        FILE_DIALOG_VISTA("OpenFileDialog", "$d.AutoUpgradeEnabled = $true;"),
+        FILE_DIALOG_CLASSIC("OpenFileDialog", "$d.AutoUpgradeEnabled = $false;"),
+        /** Save dialog with a suggested name, like Edge's download "Save as" - the guard answers it. */
+        SAVE_DIALOG_VISTA("SaveFileDialog", "$d.AutoUpgradeEnabled = $true; $d.FileName = '" + SUGGESTED_NAME + "';"),
+        SAVE_DIALOG_CLASSIC("SaveFileDialog", "$d.AutoUpgradeEnabled = $false; $d.FileName = '" + SUGGESTED_NAME + "';"),
+        /** Save dialog with an empty name box - indistinguishable from an upload, must be cancelled. */
+        SAVE_DIALOG_EMPTY_NAME("SaveFileDialog", "$d.AutoUpgradeEnabled = $true;"),
         /** A plain #32770 that is NOT a file dialog - must be left alone (just delayed). */
-        MESSAGE_BOX("", false);
+        MESSAGE_BOX(null, "");
 
+        final String dialogClass;
         final String style;
-        final boolean fileDialog;
 
-        Kind(String style, boolean fileDialog) {
+        Kind(String dialogClass, String style) {
+            this.dialogClass = dialogClass;
             this.style = style;
-            this.fileDialog = fileDialog;
         }
 
+        /** Result file content: "Cancel", "OK|<chosen path>" for the dialogs, or the MessageBox button. */
         String script(Path resultFile) {
             String load = "Add-Type -AssemblyName System.Windows.Forms;";
-            if (fileDialog) {
-                return load + "$d = New-Object System.Windows.Forms.OpenFileDialog;" + style
+            if (dialogClass != null) {
+                return load + "$d = New-Object System.Windows.Forms." + dialogClass + ";" + style
                         + "$r = $d.ShowDialog();"
-                        + "Set-Content -Path '" + resultFile + "' -Value $r";
+                        + "Set-Content -Path '" + resultFile + "' -Value ($r.ToString() + '|' + $d.FileName)";
             }
             return load + "$r = [System.Windows.Forms.MessageBox]::Show('kiosk test');"
-                    + "Set-Content -Path '" + resultFile + "' -Value $r";
+                    + "Set-Content -Path '" + resultFile + "' -Value ($r.ToString() + '|')";
         }
     }
 
@@ -131,7 +140,8 @@ final class DialogHarness {
      *                  until the timeout, since the probe spins a CPU core)
      * @param timeoutMs how long to wait for the dialog to go away; on expiry the result is "TIMEOUT"
      */
-    static Outcome run(Kind kind, boolean withGuard, boolean measure, long timeoutMs) throws Exception {
+    static Outcome run(Kind kind, boolean withGuard, java.nio.file.Path saveDir, boolean measure, long timeoutMs)
+            throws Exception {
         Pointer desktop = Win32.User32.INSTANCE.CreateDesktop(
                 DESKTOP_NAME, Pointer.NULL, Pointer.NULL, 0, Win32.GENERIC_ALL, Pointer.NULL);
         if (desktop == null) {
@@ -146,7 +156,7 @@ final class DialogHarness {
 
         try {
             if (withGuard) {
-                guard = new KioskDesktopGuard(desktop);
+                guard = new KioskDesktopGuard(desktop, saveDir);
                 guard.start();
             }
             if (measure) {

@@ -5,6 +5,7 @@ import com.sun.jna.Pointer;
 import com.sun.jna.WString;
 
 import java.io.IOException;
+import java.nio.file.Path;
 import java.util.concurrent.TimeUnit;
 import java.util.concurrent.TimeoutException;
 
@@ -21,6 +22,7 @@ final class KioskController {
     private volatile Pointer kioskDesktop;
     private ProcessHandle browserProcess;
     private KioskDesktopGuard guard;
+    private Path downloadDir;
 
     /** Fires on the guard's own thread (attached to the kiosk desktop) - subscribers touching UI must marshal themselves. */
     private volatile Runnable exitRequestedHandler;
@@ -43,13 +45,25 @@ final class KioskController {
             throw new IOException("Nie znaleziono Edge ani Chrome. Ustaw browserPath w kiosk.settings.json.");
         }
 
+        // FileMode "block": no download folder at all (null) - every file dialog is
+        // cancelled, nothing is saved, and stop() has nothing to hand off.
+        // FileMode "download": the one folder downloads go to. Anything a crashed
+        // earlier session left in it must not be there for this customer to find.
+        downloadDir = config.fileMode == KioskConfig.FileMode.DOWNLOAD ? config.resolvedDownloadDir() : null;
+        DownloadCollector.collect(downloadDir);
+
+        Path profile = KioskProfile.prepare();
+
         Pointer desktop = Win32.User32.INSTANCE.CreateDesktop(
                 DESKTOP_NAME, Pointer.NULL, Pointer.NULL, 0, Win32.GENERIC_ALL, Pointer.NULL);
         if (desktop == null) {
             throw new IOException("CreateDesktop nie powiodło się (błąd " + Native.getLastError() + ").");
         }
 
+        // Own profile (--user-data-dir): keeps the kiosk off the operator's
+        // Edge - see KioskProfile. Downloads are steered by the guard.
         String commandLine = "\"" + browserPath + "\" --kiosk \"" + config.url + "\""
+                + " --user-data-dir=\"" + profile.toAbsolutePath() + "\""
                 + " --edge-kiosk-type=" + config.kioskType
                 + " --kiosk-idle-timeout-minutes=" + config.idleTimeoutMinutes
                 + " --no-first-run --start-maximized";
@@ -84,7 +98,7 @@ final class KioskController {
         browserProcess = ProcessHandle.of(Integer.toUnsignedLong(processInfo.dwProcessId)).orElse(null);
         Win32.Kernel32.INSTANCE.CloseHandle(processInfo.hProcess);
 
-        guard = new KioskDesktopGuard(kioskDesktop);
+        guard = new KioskDesktopGuard(kioskDesktop, downloadDir);
         guard.setExitHandler(() -> {
             Runnable handler = exitRequestedHandler;
             if (handler != null) {
@@ -157,6 +171,10 @@ final class KioskController {
             }
             browserProcess = null;
         }
+
+        // The browser is gone, so nothing is writing to the folder any more.
+        // The session is already locked at this point - this doesn't delay it.
+        DownloadCollector.collect(downloadDir);
 
         Win32.User32.INSTANCE.CloseDesktop(kioskDesktop);
         kioskDesktop = null;

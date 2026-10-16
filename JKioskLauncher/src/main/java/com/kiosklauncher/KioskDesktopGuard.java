@@ -43,13 +43,27 @@ final class KioskDesktopGuard {
 
     private volatile Runnable exitHandler;
 
-    private final FileDialogWatchdog fileDialogWatchdog = new FileDialogWatchdog();
+    private final FileDialogWatchdog fileDialogWatchdog;
 
     /** Set when the guard thread could not set itself up; start() rethrows it. */
     private volatile RuntimeException failure;
 
+    /** FileMode "block": every file dialog is cancelled - no uploads, no downloads. */
     KioskDesktopGuard(Pointer desktop) {
+        this(desktop, null);
+    }
+
+    /**
+     * Always armed - there is no "off": the kiosk runs as the operator's own account, so an
+     * unguarded file dialog would expose the operator's files.
+     *
+     * @param saveDir FileMode "download": the one folder Save dialogs (i.e. downloads) are redirected
+     *                into and confirmed; Open dialogs (uploads) are always cancelled.
+     *                Null = FileMode "block": cancel every file dialog, so nothing is uploaded or saved.
+     */
+    KioskDesktopGuard(Pointer desktop, java.nio.file.Path saveDir) {
         this.desktop = desktop;
+        this.fileDialogWatchdog = new FileDialogWatchdog(saveDir);
     }
 
     void setExitHandler(Runnable handler) {

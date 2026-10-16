@@ -60,6 +60,15 @@ public final class Win32 {
     public static final int WM_CLOSE = 0x0010;
     public static final int SW_HIDE = 0;
 
+    // Driving a native Save dialog from outside (see FileDialogWatchdog).
+    public static final int WM_SETTEXT = 0x000C;
+    public static final int WM_GETTEXT = 0x000D;
+    public static final int BM_CLICK = 0x00F5;
+    public static final int SMTO_ABORTIFHUNG = 0x0002;
+    public static final int IDOK = 1;
+    /** Control id of the "File name" edit in common file dialogs (edt1). */
+    public static final int ID_FILENAME_EDIT = 0x0480;
+
     public static final int MOD_ALT = 0x0001;
     public static final int MOD_CONTROL = 0x0002;
     public static final int MOD_SHIFT = 0x0004;
@@ -155,6 +164,11 @@ public final class Win32 {
                       int idEventThread, int dwmsEventTime);
     }
 
+    /** WNDENUMPROC for EnumChildWindows; return true to keep enumerating. */
+    public interface WndEnumProc extends StdCallLibrary.StdCallCallback {
+        boolean callback(Pointer hWnd, Pointer lParam);
+    }
+
     /** TIMERPROC - with a NULL window it is called from DispatchMessage on the thread that set the timer. */
     public interface TimerProc extends StdCallLibrary.StdCallCallback {
         void callback(Pointer hwnd, int uMsg, Pointer idEvent, int dwTime);
@@ -234,9 +248,31 @@ public final class Win32 {
 
         boolean IsWindow(Pointer hWnd);
 
+        /** Returns the thread id; the owning process id is written to lpdwProcessId. */
+        int GetWindowThreadProcessId(Pointer hWnd, com.sun.jna.ptr.IntByReference lpdwProcessId);
+
         Pointer SetTimer(Pointer hWnd, Pointer nIDEvent, int uElapse, TimerProc lpTimerFunc);
 
         boolean KillTimer(Pointer hWnd, Pointer uIDEvent);
+
+        boolean EnumChildWindows(Pointer hWndParent, WndEnumProc lpEnumFunc, Pointer lParam);
+
+        Pointer GetParent(Pointer hWnd);
+
+        int GetDlgCtrlID(Pointer hWnd);
+
+        // SendMessageTimeout rather than SendMessage: the target lives in another
+        // process, and with SMTO_ABORTIFHUNG a stuck browser can't wedge our thread.
+        // wParam/lParam are pointer-sized on x64, hence Pointer; lpdwResult is a
+        // DWORD_PTR (8 bytes), hence LongByReference.
+        Pointer SendMessageTimeout(Pointer hWnd, int msg, Pointer wParam, char[] lParam, int fuFlags, int uTimeout,
+                                   com.sun.jna.ptr.LongByReference lpdwResult);
+
+        Pointer SendMessageTimeout(Pointer hWnd, int msg, Pointer wParam, WString lParam, int fuFlags, int uTimeout,
+                                   com.sun.jna.ptr.LongByReference lpdwResult);
+
+        Pointer SendMessageTimeout(Pointer hWnd, int msg, Pointer wParam, Pointer lParam, int fuFlags, int uTimeout,
+                                   com.sun.jna.ptr.LongByReference lpdwResult);
     }
 
     // ---- kernel32.dll --------------------------------------------------------
