@@ -254,13 +254,54 @@ java -jar target/JKioskLauncher.jar
 `mvn package` (dzięki `maven-shade-plugin` w `pom.xml`) tworzy jeden
 uruchamialny "fat jar" z wbudowanym JNA - `target/JKioskLauncher.jar`.
 
-W przeciwieństwie do self-contained publish z .NET, **to zawsze wymaga
-zainstalowanego JRE na docelowej maszynie** (sam JNA nie eliminuje tej
-zależności - jar wciąż potrzebuje JVM). Jeśli zależy Ci na jednym pliku
-bez instalowania JRE osobno, doczytaj o `jpackage` (dołączony do JDK od
-wersji 14) - potrafi spakować jar razem z własnym, okrojonym środowiskiem
-uruchomieniowym w jeden `.exe`, podobnie jak `dotnet publish
---self-contained`. Nie jest to tu skonfigurowane.
+Sam jar **wymaga zainstalowanego JRE na docelowej maszynie** (JNA nie
+eliminuje tej zależności). Żeby go nie wymagać, zbuduj natywną aplikację:
+
+### EXE z własnym JRE (`jpackage`)
+
+```bash
+mvn -Pjpackage verify -DskipTests
+```
+
+Wynik: `target/jpackage/JKioskLauncher/JKioskLauncher.exe` - zwykły folder
+(ok. 76 MB: launcher, `app\` z jarem i okrojone JRE w `runtime\`), który
+można skopiować na dowolny Windows bez Javy. To profil Mavena, więc zwykłe
+`mvn package` zostaje samym fat jarem. Używa `jpackage` z JDK, na którym
+działa Maven (JDK 14+); `mvn clean` przed budową pozbywa się ostrzeżeń shade
+o "nakładających się klasach" (przepakowuje gotowy już jar - nieszkodliwe).
+
+- **Moduły JRE** są wskazane jawnie (`--add-modules java.desktop,
+  java.logging,jdk.unsupported`): `java.desktop` to ikona w zasobniku i okna,
+  reszta - JNA. Po dołożeniu do kodu czegoś spoza tych modułów (np. serwera
+  HTTP) EXE padnie dopiero w działaniu - dopisz moduł w `pom.xml`.
+- **Plik ustawień** leży obok jara, czyli w `app\kiosk.settings.json` (tworzony
+  z domyślnymi wartościami przy pierwszym starcie). Po skopiowaniu folderu do
+  `C:\Program Files` zwykły użytkownik nie ma tam prawa zapisu - edytuj plik
+  jako administrator albo trzymaj folder w katalogu, do którego operator ma
+  prawo zapisu.
+- **Instalator** (`-Djpackage.type=exe` lub `msi`) wymaga WiX Toolset, którego
+  `jpackage` sam poinformuje o braku. **Nie próbowałem** - sprawdzony jest tylko
+  `app-image`.
+- Okrojony runtime nie ma `java.exe` (`jpackage` go usuwa), więc nie da się
+  nim uruchomić testów. Sprawdziłem to więc inaczej: testy (Eksplorator,
+  konfiguracja) uruchomione pełnym JDK z `--limit-modules` na dokładnie ten
+  zestaw modułów, który jlink włożył do runtime'u, przechodzą; sam EXE
+  startuje i działa (zasobnik + JNA). Pełnej sesji kiosku z EXE nie
+  przeklikiwałem - wymaga to kliknięć w zasobniku.
+
+### Podpisywanie
+
+EXE **nie jest podpisany**. Podpis Authenticode robi się `signtool` z
+Windows SDK po zbudowaniu, np.
+`signtool sign /fd sha256 /tr <serwer RFC3161> /td sha256 /sha1 <odcisk> JKioskLauncher.exe`
+(znacznik czasu jest ważny - bez niego podpis wygasa razem z certyfikatem).
+Potrzebny jest certyfikat podpisu kodu: z wewnętrznego CA firmy (zaufanie
+rozdane przez GPO/Intune - zwykle wystarcza do wdrożenia korporacyjnego)
+albo publiczny OV/EV (gdy EXE ma trafić poza organizację). Aplikacja używa
+globalnych hooków i zabija procesy, co jest wzorcem, na który reagują
+EDR-y - podpis pozwala administratorom dopuścić ją po wydawcy
+(AppLocker/WDAC), ale nie gwarantuje, że nic jej nie zablokuje. Podpisuj
+`JKioskLauncher.exe` po `jpackage`; przy instalatorze - także sam instalator.
 
 ## Do sprawdzenia po zbudowaniu
 

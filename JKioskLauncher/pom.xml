@@ -55,4 +55,131 @@
       </plugin>
     </plugins>
   </build>
+
+  <profiles>
+    <!--
+      Native Windows app (JKioskLauncher.exe + a bundled, trimmed JRE), so the
+      target machine needs no Java installed:
+
+          mvn -Pjpackage verify -DskipTests
+
+      Result: target/jpackage/JKioskLauncher/JKioskLauncher.exe (an "app-image":
+      a plain folder, copy it anywhere). Not part of the default build on purpose -
+      it is slow and the default `mvn package` stays a plain fat jar.
+
+      -Djpackage.type=exe|msi builds an installer instead; that needs the WiX
+      Toolset installed (jpackage checks for it and says so), and has NOT been
+      tried here - only app-image has.
+
+      Runs jpackage from the JDK that runs Maven (${java.home}), so use JDK 14+.
+      The EXE launcher is NOT signed - see README ("Podpisywanie").
+    -->
+    <profile>
+      <id>jpackage</id>
+      <properties>
+        <jpackage.type>app-image</jpackage.type>
+      </properties>
+      <build>
+        <plugins>
+          <!-- jpackage refuses to write into an existing output folder: clear its two folders
+               (and only those - excludeDefaultDirectories keeps target/ and the jar). -->
+          <plugin>
+            <groupId>org.apache.maven.plugins</groupId>
+            <artifactId>maven-clean-plugin</artifactId>
+            <version>3.3.2</version>
+            <executions>
+              <execution>
+                <id>clean-jpackage-output</id>
+                <phase>verify</phase>
+                <goals>
+                  <goal>clean</goal>
+                </goals>
+                <configuration>
+                  <excludeDefaultDirectories>true</excludeDefaultDirectories>
+                  <filesets>
+                    <fileset>
+                      <directory>${project.build.directory}/jpackage</directory>
+                    </fileset>
+                    <fileset>
+                      <directory>${project.build.directory}/jpackage-input</directory>
+                    </fileset>
+                  </filesets>
+                </configuration>
+              </execution>
+            </executions>
+          </plugin>
+
+          <!-- jpackage's input option copies EVERYTHING in the folder it is given, and target/ also holds
+               classes, the un-shaded jar, reports... Stage just the runnable fat jar. -->
+          <plugin>
+            <groupId>org.apache.maven.plugins</groupId>
+            <artifactId>maven-resources-plugin</artifactId>
+            <version>3.3.1</version>
+            <executions>
+              <execution>
+                <id>stage-jpackage-input</id>
+                <phase>verify</phase>
+                <goals>
+                  <goal>copy-resources</goal>
+                </goals>
+                <configuration>
+                  <outputDirectory>${project.build.directory}/jpackage-input</outputDirectory>
+                  <resources>
+                    <resource>
+                      <directory>${project.build.directory}</directory>
+                      <includes>
+                        <include>${project.build.finalName}.jar</include>
+                      </includes>
+                    </resource>
+                  </resources>
+                </configuration>
+              </execution>
+            </executions>
+          </plugin>
+
+          <plugin>
+            <groupId>org.codehaus.mojo</groupId>
+            <artifactId>exec-maven-plugin</artifactId>
+            <version>3.5.0</version>
+            <executions>
+              <execution>
+                <id>jpackage</id>
+                <phase>verify</phase>
+                <goals>
+                  <goal>exec</goal>
+                </goals>
+                <configuration>
+                  <executable>${java.home}/bin/jpackage</executable>
+                  <arguments>
+                    <argument>--type</argument>
+                    <argument>${jpackage.type}</argument>
+                    <argument>--name</argument>
+                    <argument>${project.build.finalName}</argument>
+                    <argument>--app-version</argument>
+                    <argument>${project.version}</argument>
+                    <argument>--vendor</argument>
+                    <argument>${project.groupId}</argument>
+                    <argument>--description</argument>
+                    <argument>Kiosk browser on an isolated desktop</argument>
+                    <argument>--input</argument>
+                    <argument>${project.build.directory}/jpackage-input</argument>
+                    <argument>--main-jar</argument>
+                    <argument>${project.build.finalName}.jar</argument>
+                    <argument>--main-class</argument>
+                    <argument>com.kiosklauncher.Main</argument>
+                    <argument>--dest</argument>
+                    <argument>${project.build.directory}/jpackage</argument>
+                    <!-- The trimmed JRE (jlink) has to contain what the app uses: AWT/Swing for the tray
+                         icon and dialogs (java.desktop), JNA's logging, and JNA's use of internals. -->
+                    <argument>--add-modules</argument>
+                    <argument>java.desktop,java.logging,jdk.unsupported</argument>
+                  </arguments>
+                </configuration>
+              </execution>
+            </executions>
+          </plugin>
+        </plugins>
+      </build>
+    </profile>
+  </profiles>
 </project>
