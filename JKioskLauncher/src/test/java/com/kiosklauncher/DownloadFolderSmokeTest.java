@@ -201,12 +201,13 @@ public final class DownloadFolderSmokeTest {
         }
     }
 
-    /** Kills only browser processes started with our throwaway profile - never the operator's own Edge. */
+    /**
+     * Ends browser processes started with our throwaway profile - never the operator's own Edge.
+     * (An earlier version filtered on ProcessHandle.info().commandLine(), which is always empty on
+     * Windows, so it silently did nothing; only the process-tree kill in run() was really working.)
+     */
     private static void killBrowsersUsing(Path profile) throws InterruptedException {
-        String marker = profile.toString();
-        ProcessHandle.allProcesses()
-                .filter(p -> p.info().commandLine().map(c -> c.contains(marker)).orElse(false))
-                .forEach(ProcessHandle::destroyForcibly);
+        KioskProfile.endBrowsersUsing(profile);
         TimeUnit.MILLISECONDS.sleep(1500); // let Windows release the profile's file handles
     }
 

@@ -17,7 +17,7 @@ import java.util.concurrent.TimeoutException;
  */
 final class KioskController {
 
-    private static final String DESKTOP_NAME = "KioskSecureDesktop";
+    static final String DESKTOP_NAME = "KioskSecureDesktop";
 
     private volatile Pointer kioskDesktop;
     private ProcessHandle browserProcess;
@@ -38,6 +38,14 @@ final class KioskController {
     void start(KioskConfig config) throws IOException {
         if (isActive()) {
             return;
+        }
+
+        // CreateDesktop on a name that already exists just opens that desktop - the new browser would then
+        // land next to a session this launcher doesn't own. Main() deals with such a session at startup
+        // (offers to end it), so seeing one here means it appeared since; don't build on top of it.
+        if (KioskSession.exists(DESKTOP_NAME)) {
+            throw new IOException("Na pulpicie kiosku działa już inna sesja. Zamknij ją (uruchom aplikację ponownie)"
+                    + " i spróbuj jeszcze raz.");
         }
 
         String browserPath = config.browserPath != null ? config.browserPath : BrowserLocator.find();

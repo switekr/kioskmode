@@ -242,6 +242,75 @@ java -cp "target/JKioskLauncher.jar;target/test-classes" com.kiosklauncher.Downl
 java -cp "target/JKioskLauncher.jar;target/test-classes" com.kiosklauncher.ExplorerWindowTest
 ```
 
+## Co aplikacja zapisuje na dysku
+
+| Gdzie | Co | Kiedy znika |
+|---|---|---|
+| `%LOCALAPPDATA%\JKioskLauncher\profile` (ok. 20 MB) | świeży profil przeglądarki kiosku (`--user-data-dir`) - własne pliki Edge, m.in. podfoldery `Nurturing`, bazy SQLite z plikami `-journal` | kasowany **przy każdym starcie** kiosku, nie na końcu sesji - po sesji leży do następnego startu |
+| `%LOCALAPPDATA%\JKioskLauncher\profile-<czas>` | tylko awaryjnie, patrz niżej | sprzątany przy kolejnym starcie |
+| `DownloadDir` (+ `handoff\`) | pobrane pliki, tryb `download` | patrz "Folder pobierania" |
+| `kiosk.settings.json` | ustawienia, obok jara (w EXE: `app\`) | nigdy sam |
+| `%TEMP%\jna-<liczba>\jna*.dll` | natywna biblioteka JNA, wypakowywana przy starcie | pozostaje, nadpisywana |
+
+Profil Edge operatora nie jest ruszany. Kiosk działa w trybie InPrivate, więc
+historia i ciasteczka klienta nie są zapisywane, ale sam folder profilu zawiera
+pliki Edge, które mogą tam zostać aż do następnego startu.
+
+**Zablokowany profil.** Komunikat w stylu "`...\profile\Nurturing\campaign_history-journal`
+- plik jest używany przez inny proces" pochodził z kasowania profilu przy
+starcie: Windows nie usuwa pliku, który ktoś ma otwarty, a pierwsza taka
+odmowa przerywała start kiosku. Zwykle to przeglądarka z poprzedniej sesji,
+która wciąż działa (np. aplikację zamknięto z Menedżera zadań - awaryjne
+wyjście - więc nikt nie zamknął Edge) albo jeszcze się zamyka; czasem
+antywirus lub indeksowanie. Teraz `KioskProfile.prepare()`:
+
+1. próbuje skasować profil od razu (zwykły start - bez opóźnienia);
+2. jeśli się nie da, kończy przeglądarki działające na tym profilu (szuka
+   procesów po ścieżce profilu w wierszu poleceń przez WMI/PowerShell - **nigdy**
+   nie ruszy Edge operatora, bo ten nie ma tej ścieżki) i próbuje ponownie
+   przez ok. 1,5 s;
+3. jeśli coś, czego nie da się zakończyć, nadal trzyma plik - kiosk **i tak
+   startuje**, na świeżym folderze `profile-<czas>`, a stary zostaje do
+   posprzątania przy następnym starcie.
+
+Jeśli PowerShell jest zablokowany polityką, krok 2 po prostu się nie uda i
+zadziała krok 3. Uwaga techniczna: `ProcessHandle.info().commandLine()` na
+Windows zawsze zwraca pusto, dlatego używane jest WMI. Testy:
+`KioskProfileTest` (zablokowany plik trzymany przez proces PowerShell, a także
+prawdziwy Edge pozostawiony na profilu):
+
+```bash
+java -cp "target/JKioskLauncher.jar;target/test-classes" com.kiosklauncher.KioskProfileTest
+```
+
+## Tylko jedna kopia naraz
+
+Dwie kopie na jednym koncie dzieliłyby profil przeglądarki i pulpit kiosku -
+stąd m.in. błąd „plik zablokowany przez inny proces". Dlatego przy starcie
+(`Main`, `SingleInstance`, `KioskSession`):
+
+| Sytuacja | Co widzi operator |
+|---|---|
+| Launcher już działa, nie ma sesji kiosku | okno „już uruchomiony - sprawdź zasobnik" |
+| Launcher działa **i ma aktywną sesję** (np. po Ctrl+Alt+Del → Menedżer zadań ekran jest na zwykłym pulpicie, a kiosk wciąż żyje) | wybór: **Przełącz do sesji kiosku** (wyjście jak zwykle Ctrl+Alt+Shift+K → hasło) / **Zakończ sesję** (kończy tamten launcher i przeglądarkę, a ta kopia przejmuje jego miejsce) / Anuluj |
+| Launchera nie ma, ale na pulpicie kiosku wciąż działa przeglądarka (launcher zabity w Menedżerze zadań) | **Zakończ sesję** / Anuluj. „Przełącz" nie jest oferowane: nad taką przeglądarką nie ma strażnika, więc nie byłoby jak z niej wyjść |
+
+Jak to działa: muteks w przestrzeni `Global\` (nazwa zawiera nazwę użytkownika -
+widzi też kopię uruchomioną w innej sesji Windows, np. RDP obok konsoli, ale
+nie blokuje innych kont) oraz plik `%LOCALAPPDATA%\JKioskLauncher\instance.txt`
+z PID-em i czasem startu działającego launchera (żeby wiedzieć, KTO działa i
+odróżnić go od muteksu, po którym nikt już nie został). Obecność sesji poznaje
+się po istnieniu pulpitu `KioskSecureDesktop`. „Zakończ sesję" szuka procesów
+po ścieżce profilu (jak w sekcji wyżej), więc Edge operatora jest bezpieczny.
+Samo `KioskController.start()` też odmawia, gdy pulpit kiosku już istnieje.
+
+Test: `SingleInstanceTest` (prawdziwy proces-potomek trzymający muteks, nieaktualne
+dane, osierocony Edge na pulpicie testowym; ekranu nie przełącza):
+
+```bash
+java -cp "target/JKioskLauncher.jar;target/test-classes" com.kiosklauncher.SingleInstanceTest
+```
+
 ## Budowanie i uruchamianie
 
 Wymaga JDK 17+ i Mavena (przetestowane na JDK 21 / Maven 3.9).
