@@ -294,6 +294,7 @@ stąd m.in. błąd „plik zablokowany przez inny proces". Dlatego przy starcie
 | Launcher już działa, nie ma sesji kiosku | okno „już uruchomiony - sprawdź zasobnik" |
 | Launcher działa **i ma aktywną sesję** (np. po Ctrl+Alt+Del → Menedżer zadań ekran jest na zwykłym pulpicie, a kiosk wciąż żyje) | wybór: **Przełącz do sesji kiosku** (wyjście jak zwykle Ctrl+Alt+Shift+K → hasło) / **Zakończ sesję** (kończy tamten launcher i przeglądarkę, a ta kopia przejmuje jego miejsce) / Anuluj |
 | Launchera nie ma, ale na pulpicie kiosku wciąż działa przeglądarka (launcher zabity w Menedżerze zadań) | **Zakończ sesję** / Anuluj. „Przełącz" nie jest oferowane: nad taką przeglądarką nie ma strażnika, więc nie byłoby jak z niej wyjść |
+| Launcher działa, ale **nie ma** aktywnej sesji, a pulpit kiosku nadal istnieje (porzucona, pusta sesja) | **Zakończ sesję** / Anuluj - „Przełącz" też nie jest oferowane, bo nikt tam nie pilnuje skrótu wyjścia |
 
 Jak to działa: muteks w przestrzeni `Global\` (nazwa zawiera nazwę użytkownika -
 widzi też kopię uruchomioną w innej sesji Windows, np. RDP obok konsoli, ale
@@ -303,6 +304,32 @@ odróżnić go od muteksu, po którym nikt już nie został). Obecność sesji p
 się po istnieniu pulpitu `KioskSecureDesktop`. „Zakończ sesję" szuka procesów
 po ścieżce profilu (jak w sekcji wyżej), więc Edge operatora jest bezpieczny.
 Samo `KioskController.start()` też odmawia, gdy pulpit kiosku już istnieje.
+
+Launcher zapisuje w `instance.txt` także `session=active|none`, żeby druga kopia
+odróżniła sesję z żywym strażnikiem (można do niej przełączyć) od samego
+pulpitu, który został po sesji.
+
+## Zamknięcie okna przeglądarki kończy sesję
+
+Gdy klient zamknie okno przeglądarki (np. Ctrl+W na ostatniej karcie), sesja
+kończy się tak samo jak po Ctrl+Alt+Shift+K: powrót na zwykły pulpit i ekran
+blokady. (Wcześniej zostawał pusty pulpit kiosku.) Zamykanie przez samą
+aplikację tego nie wywołuje. Ewentualne procesy pomocnicze przeglądarki, które
+przeżyły okno, są kończone po ścieżce profilu - inaczej trzymałyby pulpit i
+profil.
+
+Przy okazji naprawiony błąd: `CloseDesktop` przy kończeniu sesji potrafił się
+nie udać (ERROR_BUSY - wątek strażnika dla systemu jeszcze nie zniknął) i
+pulpit zostawał do końca działania aplikacji, jako pusta sesja bez skrótu
+wyjścia. Teraz jest ponawiany; skrót Ctrl+Alt+Shift+K, którego nie dało się
+zarejestrować (zajęty przez inny program), przerywa start kiosku zamiast po
+cichu zostawić klienta bez wyjścia. Testy (zajmują ekran na ok. 10-15 s, nie
+blokują stacji):
+
+```bash
+java -cp "target/JKioskLauncher.jar;target/test-classes" com.kiosklauncher.BrowserClosedSmokeTest
+java -cp "target/JKioskLauncher.jar;target/test-classes" com.kiosklauncher.SwitchBackSmokeTest
+```
 
 Test: `SingleInstanceTest` (prawdziwy proces-potomek trzymający muteks, nieaktualne
 dane, osierocony Edge na pulpicie testowym; ekranu nie przełącza):

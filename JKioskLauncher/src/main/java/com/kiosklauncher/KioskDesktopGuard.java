@@ -106,8 +106,15 @@ final class KioskDesktopGuard {
                 0, "STATIC", "", 0, 0, 0, 0, 0,
                 Win32.HWND_MESSAGE, Pointer.NULL, Pointer.NULL, Pointer.NULL);
 
-        Win32.User32.INSTANCE.RegisterHotKey(messageWindow, HOTKEY_ID,
-                Win32.MOD_CONTROL | Win32.MOD_ALT | Win32.MOD_SHIFT, Win32.VK_K);
+        // Fail closed: without the exit hotkey nobody could leave the kiosk desktop (another program may
+        // already own the combination), so don't let the kiosk start.
+        if (!Win32.User32.INSTANCE.RegisterHotKey(messageWindow, HOTKEY_ID,
+                Win32.MOD_CONTROL | Win32.MOD_ALT | Win32.MOD_SHIFT, Win32.VK_K)) {
+            failure = new IllegalStateException("Nie udało się zarejestrować skrótu Ctrl+Alt+Shift+K"
+                    + " (zajęty przez inny program?) - bez niego nie byłoby wyjścia z kiosku.");
+            ready.countDown();
+            return;
+        }
 
         hookProc = this::hookCallback;
         hookHandle = Win32.User32.INSTANCE.SetWindowsHookEx(Win32.WH_KEYBOARD_LL, hookProc, Pointer.NULL, 0);

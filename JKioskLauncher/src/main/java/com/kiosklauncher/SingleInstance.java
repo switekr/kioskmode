@@ -35,6 +35,10 @@ final class SingleInstance {
     // Handles are kept for the life of the process on purpose - closing one would let the mutex go.
     private static final List<Pointer> HELD = new ArrayList<>();
 
+    // Where this process registered itself, and whether it currently runs a kiosk session (see markSession).
+    private static volatile Path registeredInfo;
+    private static volatile boolean sessionActive;
+
     private SingleInstance() {
     }
 
@@ -44,11 +48,17 @@ final class SingleInstance {
         final boolean otherRunning;
         /** Its process, or null when the mutex says it exists but it left no (valid) info behind. */
         final ProcessHandle other;
+        /**
+         * True if that launcher itself says it is running a kiosk session right now (its guard is armed, so
+         * the exit hotkey works). False when it is idle - a kiosk desktop that exists then is a leftover.
+         */
+        final boolean otherSessionActive;
         private final Path infoFile;
 
-        private Result(boolean otherRunning, ProcessHandle other, Path infoFile) {
+        private Result(boolean otherRunning, ProcessHandle other, boolean otherSessionActive, Path infoFile) {
             this.otherRunning = otherRunning;
             this.other = other;
+            this.otherSessionActive = otherSessionActive;
             this.infoFile = infoFile;
         }
 
@@ -94,19 +104,20 @@ final class SingleInstance {
 
     /** Same with explicit names, so tests don't collide with a real launcher. */
     static Result acquire(String mutexName, Path infoFile) {
+        registeredInfo = infoFile;
         Pointer mutex = Win32.Kernel32.INSTANCE.CreateMutex(Pointer.NULL, false, mutexName);
         int error = Native.getLastError();
         if (mutex == null) {
             // Could not even create it (should not happen). Failing the start over this would be worse
             // than the problem it guards against.
             writeInfo(infoFile);
-            return new Result(false, null, infoFile);
+            return new Result(false, null, false, infoFile);
         }
         HELD.add(mutex);
 
         if (error != ERROR_ALREADY_EXISTS) {
             writeInfo(infoFile);
-            return new Result(false, null, infoFile);
+            return new Result(false, null, false, infoFile);
         }
 
         // The mutex exists: is its owner really alive?
@@ -114,34 +125,50 @@ final class SingleInstance {
         if (recorded == null) {
             // Exists but no info: an older build (it never wrote one) or a launcher caught between creating
             // the mutex and writing the file. Treat it as running; we just can't name it.
-            return new Result(true, null, infoFile);
+            return new Result(true, null, false, infoFile);
         }
         ProcessHandle owner = ProcessHandle.of(recorded.pid).orElse(null);
         boolean alive = owner != null && owner.isAlive()
                 && owner.info().startInstant().map(s -> Math.abs(s.toEpochMilli() - recorded.startMillis) < 2000)
                         .orElse(true);
         if (alive) {
-            return new Result(true, owner, infoFile);
+            return new Result(true, owner, recorded.session(), infoFile);
         }
         writeInfo(infoFile);
-        return new Result(false, null, infoFile);
+        return new Result(false, null, false, infoFile);
     }
 
-    private record Info(long pid, long startMillis) {
+    /**
+     * Records whether this launcher is running a kiosk session, for a second launcher to read: it may only
+     * offer to switch to a session whose guard is alive. The desktop alone proves nothing - it can outlive
+     * the session (a stuck CloseDesktop), and switching to it would land on a screen with no way out.
+     */
+    static void markSession(boolean active) {
+        sessionActive = active;
+        Path file = registeredInfo;
+        if (file != null) {
+            writeInfo(file);
+        }
+    }
+
+    private record Info(long pid, long startMillis, boolean session) {
     }
 
     private static Info readInfo(Path file) {
         try {
             long pid = -1;
             long start = 0;
+            boolean session = false;
             for (String line : Files.readAllLines(file)) {
                 if (line.startsWith("pid=")) {
                     pid = Long.parseLong(line.substring(4).trim());
                 } else if (line.startsWith("start=")) {
                     start = Long.parseLong(line.substring(6).trim());
+                } else if (line.startsWith("session=")) {
+                    session = line.substring(8).trim().equals("active");
                 }
             }
-            return pid > 0 ? new Info(pid, start) : null;
+            return pid > 0 ? new Info(pid, start, session) : null;
         } catch (IOException | NumberFormatException e) {
             return null;
         }
@@ -152,7 +179,8 @@ final class SingleInstance {
         long start = self.info().startInstant().map(Instant::toEpochMilli).orElse(0L);
         try {
             Files.createDirectories(file.toAbsolutePath().getParent());
-            Files.writeString(file, "pid=" + self.pid() + "\nstart=" + start + "\n");
+            Files.writeString(file, "pid=" + self.pid() + "\nstart=" + start
+                    + "\nsession=" + (sessionActive ? "active" : "none") + "\n");
         } catch (IOException e) {
             // Only costs the "end the other one" offer later - never worth failing the start.
         }

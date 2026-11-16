@@ -80,6 +80,18 @@ public final class SingleInstanceTest {
         check("the other launcher is ended (and nothing it ran is left)", ended && !child.isAlive());
         check("info file now names this process", Files.readString(info).contains("pid=" + ProcessHandle.current().pid()));
 
+        // A launcher that is idle says so; one running a session says that - this is what lets a second
+        // launcher tell a guarded session (offer Przełącz) from a leftover desktop (offer only to end it).
+        check("idle launcher: session flag is off", Files.readString(info).contains("session=none"));
+        SingleInstance.markSession(true);
+        check("launcher with a session: flag on in the info file", Files.readString(info).contains("session=active"));
+        SingleInstance.Result seen = SingleInstance.acquire(mutex, info);
+        check("a newcomer reads that the other launcher has a live session",
+                seen.otherRunning && seen.otherSessionActive);
+        SingleInstance.markSession(false);
+        SingleInstance.Result seenIdle = SingleInstance.acquire(mutex, info);
+        check("...and that it has none after the session ended", seenIdle.otherRunning && !seenIdle.otherSessionActive);
+
         // This process is registered now: a further launcher would see US.
         SingleInstance.Result third = SingleInstance.acquire(mutex, info);
         check("after the take-over, a newcomer sees this process as the running launcher",

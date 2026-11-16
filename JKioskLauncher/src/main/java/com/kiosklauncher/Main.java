@@ -48,6 +48,18 @@ public final class Main {
             return false;
         }
 
+        if (!instance.otherSessionActive) {
+            // The desktop is there but the launcher says it runs no session: what remains is a leftover with
+            // nobody guarding it, so the exit hotkey would not work on it. Switching to it would strand the
+            // operator - the only sensible offer is to clear it away.
+            int leftover = ask("Na pulpicie kiosku została pusta lub porzucona sesja" + who + ".\n"
+                            + "Żadna aplikacja jej nie pilnuje, więc nie da się do niej bezpiecznie przełączyć "
+                            + "(skrót Ctrl+Alt+Shift+K tam nie zadziała).\n\n"
+                            + "Zakończyć ją? Działająca aplikacja zostanie zamknięta, a ta kopia przejmie jej miejsce.",
+                    new String[] {"Zakończ sesję", "Anuluj"}, 1);
+            return leftover == 0 && endLiveSession(instance);
+        }
+
         int choice = ask("Sesja kiosku jest nadal aktywna" + who + ".\n\n"
                         + "Przełącz - wracasz do okna kiosku (wyjście: Ctrl+Alt+Shift+K, potem hasło).\n"
                         + "Zakończ - kończę tamtą sesję i przeglądarkę, a ta kopia aplikacji przejmuje jej miejsce.",
@@ -59,20 +71,24 @@ public final class Main {
             }
             return false;
         }
-        if (choice == 1) {
-            // The browser is not the launcher's child, so ending the launcher alone would leave it
-            // running on the kiosk desktop - end both.
-            if (instance.other == null || !instance.terminateOther()) {
-                error("Nie udało się zakończyć działającej aplikacji. Zamknij ją ręcznie (Menedżer zadań, proces javaw/JKioskLauncher).");
-                return false;
-            }
-            if (!KioskSession.end(KioskController.DESKTOP_NAME, KioskProfile.defaultProfile())) {
-                error("Aplikacja została zakończona, ale pulpit kiosku nadal jest zajęty. Zamknij przeglądarkę ręcznie.");
-                return false;
-            }
-            return true;
+        return choice == 1 && endLiveSession(instance);
+    }
+
+    /**
+     * Ends the other launcher and the session it left, so this process can take over. The browser is not
+     * the launcher's child, so ending the launcher alone would leave it running on the kiosk desktop -
+     * both go. Also what releases a desktop the other launcher could not close.
+     */
+    private static boolean endLiveSession(SingleInstance.Result instance) {
+        if (instance.other == null || !instance.terminateOther()) {
+            error("Nie udało się zakończyć działającej aplikacji. Zamknij ją ręcznie (Menedżer zadań, proces javaw/JKioskLauncher).");
+            return false;
         }
-        return false;
+        if (!KioskSession.end(KioskController.DESKTOP_NAME, KioskProfile.defaultProfile())) {
+            error("Aplikacja została zakończona, ale pulpit kiosku nadal jest zajęty. Zamknij przeglądarkę ręcznie.");
+            return false;
+        }
+        return true;
     }
 
     /**

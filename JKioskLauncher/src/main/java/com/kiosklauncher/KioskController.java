@@ -26,6 +26,14 @@ final class KioskController {
 
     /** Fires on the guard's own thread (attached to the kiosk desktop) - subscribers touching UI must marshal themselves. */
     private volatile Runnable exitRequestedHandler;
+    private volatile Runnable browserClosedHandler;
+
+    /** Identifies the running session; null while none runs or while it is being ended on purpose. */
+    private volatile Object sessionToken;
+
+    /** A desktop whose CloseDesktop kept failing; retried at the next start - see {@link #closeDesktop}. */
+    private Pointer staleDesktop;
+    private Path profileDir;
 
     boolean isActive() {
         return kioskDesktop != null;
@@ -33,6 +41,11 @@ final class KioskController {
 
     void setExitRequestedHandler(Runnable handler) {
         this.exitRequestedHandler = handler;
+    }
+
+    /** Fires (on some pool thread) when the browser's main process ends by itself, i.e. the window was closed. */
+    void setBrowserClosedHandler(Runnable handler) {
+        this.browserClosedHandler = handler;
     }
 
     void start(KioskConfig config) throws IOException {
@@ -43,6 +56,9 @@ final class KioskController {
         // CreateDesktop on a name that already exists just opens that desktop - the new browser would then
         // land next to a session this launcher doesn't own. Main() deals with such a session at startup
         // (offers to end it), so seeing one here means it appeared since; don't build on top of it.
+        if (staleDesktop != null && closeDesktop(staleDesktop)) {
+            staleDesktop = null;
+        }
         if (KioskSession.exists(DESKTOP_NAME)) {
             throw new IOException("Na pulpicie kiosku działa już inna sesja. Zamknij ją (uruchom aplikację ponownie)"
                     + " i spróbuj jeszcze raz.");
@@ -61,6 +77,7 @@ final class KioskController {
         DownloadCollector.collect(downloadDir);
 
         Path profile = KioskProfile.prepare();
+        profileDir = profile;
 
         Pointer desktop = Win32.User32.INSTANCE.CreateDesktop(
                 DESKTOP_NAME, Pointer.NULL, Pointer.NULL, 0, Win32.GENERIC_ALL, Pointer.NULL);
@@ -106,6 +123,21 @@ final class KioskController {
         browserProcess = ProcessHandle.of(Integer.toUnsignedLong(processInfo.dwProcessId)).orElse(null);
         Win32.Kernel32.INSTANCE.CloseHandle(processInfo.hProcess);
 
+        // The customer closing the browser window (Ctrl+W on the last tab, ...) ends the session the
+        // same way the exit hotkey does: back to the normal desktop, behind the lock screen. Without
+        // this the customer would be left looking at a bare desktop. Our own kill in stop() clears
+        // sessionToken first, so it doesn't count.
+        Object token = new Object();
+        sessionToken = token;
+        if (browserProcess != null) {
+            browserProcess.onExit().thenRun(() -> {
+                Runnable handler = browserClosedHandler;
+                if (sessionToken == token && handler != null) {
+                    handler.run();
+                }
+            });
+        }
+
         guard = new KioskDesktopGuard(kioskDesktop, downloadDir);
         guard.setExitHandler(() -> {
             Runnable handler = exitRequestedHandler;
@@ -119,18 +151,23 @@ final class KioskController {
             // Guard couldn't arm (hotkey/dialog watchdog) - never hand the
             // screen to the customer in that state. Undo everything; we're
             // still on the operator's desktop, so no lock is needed.
+            sessionToken = null;
             guard.stop();
             guard = null;
             if (browserProcess != null) {
                 killProcessTree(browserProcess);
                 browserProcess = null;
             }
-            Win32.User32.INSTANCE.CloseDesktop(kioskDesktop);
+            KioskProfile.endBrowsersUsing(profile);
+            if (!closeDesktop(kioskDesktop)) {
+                staleDesktop = kioskDesktop;
+            }
             kioskDesktop = null;
             throw new IOException("Nie udało się uzbroić strażnika kiosku: " + e.getMessage(), e);
         }
 
         Win32.User32.INSTANCE.SwitchDesktop(kioskDesktop);
+        SingleInstance.markSession(true);
     }
 
     /**
@@ -153,12 +190,20 @@ final class KioskController {
      * leaves the bare kiosk desktop up rather than silently unlocking.
      */
     void stop() {
+        stop(true);
+    }
+
+    /** @param lock false only for tests that must not lock the machine they run on. */
+    void stop(boolean lock) {
         if (!isActive()) {
             return;
         }
 
+        sessionToken = null; // from here on the browser ending is our doing, not the customer's
         switchToDefaultDesktop();
-        Win32.User32.INSTANCE.LockWorkStation();
+        if (lock) {
+            Win32.User32.INSTANCE.LockWorkStation();
+        }
 
         if (guard != null) {
             guard.stop();
@@ -180,12 +225,43 @@ final class KioskController {
             browserProcess = null;
         }
 
+        // The browser's main process may be gone already (the window was closed) while helper processes
+        // live on - they would hold the desktop and the profile. Whatever still runs on the profile goes.
+        if (profileDir != null) {
+            KioskProfile.endBrowsersUsing(profileDir);
+        }
+
         // The browser is gone, so nothing is writing to the folder any more.
         // The session is already locked at this point - this doesn't delay it.
         DownloadCollector.collect(downloadDir);
 
-        Win32.User32.INSTANCE.CloseDesktop(kioskDesktop);
+        if (!closeDesktop(kioskDesktop)) {
+            staleDesktop = kioskDesktop;
+        }
         kioskDesktop = null;
+        SingleInstance.markSession(false);
+    }
+
+    /**
+     * CloseDesktop fails with ERROR_BUSY while a thread of this process is still attached to the desktop -
+     * and the guard thread counts as attached for a moment after it has finished running (Thread.isAlive()
+     * is already false; the OS is not done with it). Giving up on the first try left the desktop alive for
+     * the life of the process: the next "session" was an empty desktop nobody guarded, and the exit hotkey
+     * was gone. So retry for a while.
+     */
+    private static boolean closeDesktop(Pointer desktop) {
+        for (int i = 0; i < 50; i++) {
+            if (Win32.User32.INSTANCE.CloseDesktop(desktop)) {
+                return true;
+            }
+            try {
+                Thread.sleep(100);
+            } catch (InterruptedException e) {
+                Thread.currentThread().interrupt();
+                return false;
+            }
+        }
+        return false;
     }
 
     private static void killProcessTree(ProcessHandle handle) {

@@ -64,6 +64,9 @@ final class TrayApp {
         // Fires on KioskDesktopGuard's dedicated thread, not the AWT event
         // thread - onExitCombo marshals itself over before touching any UI.
         controller.setExitRequestedHandler(this::onExitCombo);
+        // The browser window being closed ends the session just the same: back to the normal desktop,
+        // behind the lock screen. (Fires on a pool thread - same marshalling.)
+        controller.setBrowserClosedHandler(this::onExitCombo);
     }
 
     private void startKiosk() {
